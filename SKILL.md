@@ -17,7 +17,7 @@ Turn hundreds of untitled Apple Voice Memos into a searchable, organized archive
 ## What It Does
 
 1. **Finds** all Apple Voice Memos on macOS (they're hidden in a non-obvious path)
-2. **Extracts** metadata from the SQLite database (dates, durations, folder info)
+2. **Extracts** metadata from the SQLite database (dates, durations, labels)
 3. **Transcribes** every recording locally using whisper.cpp (no API keys needed)
 4. **Summarizes** each transcript with a descriptive title, themes, key quotes, and type
 5. **Builds** a searchable master index document
@@ -25,8 +25,8 @@ Turn hundreds of untitled Apple Voice Memos into a searchable, organized archive
 ## Prerequisites
 
 - macOS with Voice Memos app (recordings synced via iCloud from iPhone)
-- **Full Disk Access** for Terminal: System Settings > Privacy & Security > Full Disk Access > enable Terminal
-- Homebrew (for installing ffmpeg)
+- **Full Disk Access** for Terminal: System Settings > Privacy & Security > Full Disk Access > enable your terminal app
+- [Homebrew](https://brew.sh) — if not installed: `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`
 
 ## Step-by-Step Process
 
@@ -42,7 +42,9 @@ This path requires Full Disk Access. Verify access:
 ls ~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/ | head -5
 ```
 
-If you get "Operation not permitted", the user needs to enable Full Disk Access for Terminal.
+If you get "Operation not permitted", the user needs to enable Full Disk Access for Terminal in System Settings > Privacy & Security > Full Disk Access.
+
+If the directory doesn't exist or is empty, the user may need to open the Voice Memos app on their Mac first and wait for iCloud to sync their recordings.
 
 The folder also contains `CloudRecordings.db` — a SQLite database with metadata:
 ```bash
@@ -82,9 +84,8 @@ For the whisper binary:
 # Install whisper.cpp via brew (recommended)
 brew install whisper-cpp
 
-# The binary will be at: /opt/homebrew/bin/whisper-cpp
-# If brew isn't available, Screen Studio also bundles one at:
-# /Applications/Screen Studio.app/Contents/Resources/app.asar.unpacked/bin/whisper-darwin-arm64
+# The binary is called whisper-cli (not whisper-cpp):
+which whisper-cli  # /opt/homebrew/bin/whisper-cli (Apple Silicon) or /usr/local/bin/whisper-cli (Intel)
 ```
 
 ### Step 4: Batch Transcribe
@@ -95,19 +96,28 @@ For each audio file:
 3. Save transcript as .txt
 
 ```bash
-WHISPER="/path/to/whisper-binary"  # adjust to actual path
+WHISPER="$(command -v whisper-cli)"  # auto-detect path
 MODEL="$HOME/Documents/Voice-Memos-Organized/models/ggml-base.en.bin"
 
 for audiofile in ~/Documents/Voice-Memos-Raw/*; do
     [ -f "$audiofile" ] || continue
     BASENAME=$(basename "$audiofile" | sed 's/\.[^.]*$//')
+    TEMP_WAV="/tmp/vm_${BASENAME}.wav"
 
-    # Convert to WAV
-    ffmpeg -y -i "$audiofile" -ar 16000 -ac 1 -c:a pcm_s16le /tmp/vm_temp.wav 2>/dev/null
+    # Skip if already transcribed
+    [ -s ~/Documents/Voice-Memos-Organized/transcripts/"${BASENAME}.txt" ] && continue
+
+    # Convert to WAV (skip on failure to avoid stale data)
+    if ! ffmpeg -y -i "$audiofile" -ar 16000 -ac 1 -c:a pcm_s16le "$TEMP_WAV" 2>/dev/null; then
+        echo "SKIP: Could not convert $BASENAME"
+        continue
+    fi
 
     # Transcribe
-    "$WHISPER" -m "$MODEL" -f /tmp/vm_temp.wav --output-txt \
+    "$WHISPER" -m "$MODEL" -f "$TEMP_WAV" --output-txt \
       -of ~/Documents/Voice-Memos-Organized/transcripts/"$BASENAME" -t 8 --no-timestamps 2>/dev/null
+
+    rm -f "$TEMP_WAV"
 done
 ```
 

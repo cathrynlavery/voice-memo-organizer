@@ -2,14 +2,14 @@
 
 A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill that turns hundreds of untitled Apple Voice Memos into a searchable, organized archive — with descriptive titles, summaries, themes, and key quotes.
 
-Everything runs locally on your Mac. No API keys needed for transcription.
+Transcription runs 100% locally on your Mac using whisper.cpp — no API keys needed. Summarization is handled by Claude.
 
 ## What It Does
 
 Your Apple Voice Memos are buried in a hidden macOS folder, named things like "New Recording 247." This skill:
 
 1. **Finds** all your Voice Memos (they're at a non-obvious path that requires Full Disk Access)
-2. **Extracts** metadata from Apple's SQLite database (dates, durations, folder info)
+2. **Extracts** metadata from Apple's SQLite database (dates, durations, labels)
 3. **Transcribes** every recording locally using [whisper.cpp](https://github.com/ggerganov/whisper.cpp) (~1 min of audio per second on Apple Silicon)
 4. **Summarizes** each transcript with a descriptive title, themes, key quotes, and type classification
 5. **Builds** a searchable master index document
@@ -44,7 +44,7 @@ Each with summaries, themes, and key quotes extracted.
    mkdir -p ~/.claude/skills/voice-memo-organizer
 
    # Download the skill
-   curl -o ~/.claude/skills/voice-memo-organizer/SKILL.md \
+   curl -fL -o ~/.claude/skills/voice-memo-organizer/SKILL.md \
      https://raw.githubusercontent.com/cathrynlavery/voice-memo-organizer/main/SKILL.md
    ```
 

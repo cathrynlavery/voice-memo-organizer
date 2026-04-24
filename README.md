@@ -4,6 +4,8 @@ A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill that turns
 
 Transcription runs 100% locally on your Mac using whisper.cpp — no API keys needed. Summarization is handled by Claude.
 
+[Try it online](https://socialistic.ai/voice-memo-organizer-f11c8a?utm_source=github_readme&utm_campaign=koc_skill_creator&utm_content=hyperlink)
+
 ## What It Does
 
 Your Apple Voice Memos are buried in a hidden macOS folder, named things like "New Recording 247." This skill:

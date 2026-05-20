@@ -43,9 +43,11 @@ Each with summaries, themes, and key quotes extracted.
    # Create the skills directory
    mkdir -p ~/.claude/skills/voice-memo-organizer
 
-   # Download the skill
+   # Download the skill and troubleshooting reference
    curl -fL -o ~/.claude/skills/voice-memo-organizer/SKILL.md \
      https://raw.githubusercontent.com/cathrynlavery/voice-memo-organizer/main/SKILL.md
+   curl -fL -o ~/.claude/skills/voice-memo-organizer/TROUBLESHOOTING.md \
+     https://raw.githubusercontent.com/cathrynlavery/voice-memo-organizer/main/TROUBLESHOOTING.md
    ```
 
 3. **Tell Claude Code to use it:**

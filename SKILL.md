@@ -1,32 +1,17 @@
 ---
 name: voice-memo-organizer
-description: Find, transcribe, summarize, and organize all Apple Voice Memos into a searchable archive. Batch processes hundreds of recordings locally using whisper.cpp — no API keys needed.
+description: "Find, transcribe, summarize, and organize all Apple Voice Memos into a searchable archive. Batch processes hundreds of recordings locally using whisper.cpp — no API keys needed. Use when the user wants to organize, transcribe, or search their voice memos, mentions untitled recordings, or asks about finding Apple Voice Memos on macOS."
 ---
 
 # Voice Memo Organizer
 
 Turn hundreds of untitled Apple Voice Memos into a searchable, organized archive with descriptive titles, summaries, themes, and key quotes.
 
-## When to Use
-
-- User wants to organize their voice memos
-- User mentions having a lot of recordings they can't find or search
-- User wants to transcribe voice memos in bulk
-- User asks about finding Apple Voice Memos files on macOS
-
-## What It Does
-
-1. **Finds** all Apple Voice Memos on macOS (they're hidden in a non-obvious path)
-2. **Extracts** metadata from the SQLite database (dates, durations, labels)
-3. **Transcribes** every recording locally using whisper.cpp (no API keys needed)
-4. **Summarizes** each transcript with a descriptive title, themes, key quotes, and type
-5. **Builds** a searchable master index document
-
 ## Prerequisites
 
 - macOS with Voice Memos app (recordings synced via iCloud from iPhone)
-- **Full Disk Access** for Terminal: System Settings > Privacy & Security > Full Disk Access > enable your terminal app
-- [Homebrew](https://brew.sh) — if not installed: `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`
+- **Full Disk Access** for Terminal: System Settings > Privacy & Security > Full Disk Access > enable the terminal app
+- Homebrew installed
 
 ## Step-by-Step Process
 
@@ -42,9 +27,7 @@ This path requires Full Disk Access. Verify access:
 ls ~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/ | head -5
 ```
 
-If you get "Operation not permitted", the user needs to enable Full Disk Access for Terminal in System Settings > Privacy & Security > Full Disk Access.
-
-If the directory doesn't exist or is empty, the user may need to open the Voice Memos app on their Mac first and wait for iCloud to sync their recordings.
+If permission denied → user must enable Full Disk Access for their terminal app. If the directory is empty → user should open Voice Memos on Mac and wait for iCloud sync.
 
 The folder also contains `CloudRecordings.db` — a SQLite database with metadata:
 ```bash
@@ -71,22 +54,14 @@ sqlite3 -header -csv ~/Library/Group\ Containers/group.com.apple.VoiceMemos.shar
 ### Step 3: Install Transcription Tools
 
 ```bash
-# Install ffmpeg for audio conversion
-brew install ffmpeg
+brew install ffmpeg whisper-cpp
 
 # Download whisper.cpp base.en model (~150MB, good speed/accuracy for English)
 curl -L -o ~/Documents/Voice-Memos-Organized/models/ggml-base.en.bin \
   "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
 ```
 
-For the whisper binary:
-```bash
-# Install whisper.cpp via brew (recommended)
-brew install whisper-cpp
-
-# The binary is called whisper-cli (not whisper-cpp):
-which whisper-cli  # /opt/homebrew/bin/whisper-cli (Apple Silicon) or /usr/local/bin/whisper-cli (Intel)
-```
+> **Note:** The Homebrew formula installs the binary as `whisper-cli` (not `whisper-cpp`).
 
 ### Step 4: Batch Transcribe
 
@@ -121,7 +96,7 @@ for audiofile in ~/Documents/Voice-Memos-Raw/*; do
 done
 ```
 
-**Performance note:** ~1 minute of audio transcribes in ~1 second on Apple Silicon. 67 hours takes roughly 1 hour.
+**Performance:** ~1 min of audio per second on Apple Silicon. 67 hours of memos ≈ 1 hour to transcribe.
 
 ### Step 5: Summarize Each Transcript
 
@@ -160,7 +135,7 @@ Create `voice-memos-master-index.md` with:
 
 ## Tips
 
-- The master index works great in Obsidian, VS Code, or any text editor with Cmd+F search
 - For non-English memos, use `ggml-base.bin` (multilingual) instead of `ggml-base.en.bin`
 - For higher accuracy on important recordings, use `ggml-medium.en.bin` (~500MB)
 - The SQLite database also contains folder info if the user organized memos into folders in the app
+- See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for Full Disk Access setup, iCloud sync, model selection, and common issues

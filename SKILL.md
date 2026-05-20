@@ -57,50 +57,44 @@ sqlite3 -header -csv ~/Library/Group\ Containers/group.com.apple.VoiceMemos.shar
 ### Step 3: Install Transcription Tools
 
 ```bash
-brew install ffmpeg whisper-cpp
-
-# Download whisper.cpp base.en model (~150MB, good speed/accuracy for English)
-curl -L -o ~/Documents/Voice-Memos-Organized/models/ggml-base.en.bin \
-  "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
+brew install python@3.14 ffmpeg pipx
+pipx install parakeet-mlx
 ```
 
-> **Note:** The Homebrew formula installs the binary as `whisper-cli` (not `whisper-cpp`).
+That's it — no manual model download. The first transcription run fetches the ~2.3 GB MLX model from Hugging Face and caches it at `~/.cache/huggingface/hub/`.
+
+> **Why parakeet?** NVIDIA's [Parakeet TDT 0.6B](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2), ported to MLX so it runs natively on Apple Silicon. Comparable speed to whisper.cpp in batch mode (~60× realtime on M3 Ultra), but with proper punctuation and capitalization out of the box and lower WER (1.69% on LibriSpeech test-clean). Supports English plus 24 European languages via the v3 model.
+>
+> For non-European languages (Mandarin, Japanese, Arabic, etc.), see [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for the whisper.cpp fallback.
 
 ### Step 4: Batch Transcribe
 
-For each audio file:
-
-1. Convert to 16kHz mono WAV using ffmpeg
-2. Run whisper.cpp with the base.en model
-3. Save transcript as .txt
+`parakeet-mlx` accepts audio files directly (handles `.m4a` and `.qta` via ffmpeg internally) and loads the model once per invocation, so batch processing is fastest:
 
 ```bash
-WHISPER="$(command -v whisper-cli)"  # auto-detect path
-MODEL="$HOME/Documents/Voice-Memos-Organized/models/ggml-base.en.bin"
+mkdir -p ~/Documents/Voice-Memos-Organized/transcripts
 
+# Collect files that haven't been transcribed yet
+TODO=()
 for audiofile in ~/Documents/Voice-Memos-Raw/*; do
     [ -f "$audiofile" ] || continue
     BASENAME=$(basename "$audiofile" | sed 's/\.[^.]*$//')
-    TEMP_WAV="/tmp/vm_${BASENAME}.wav"
-
-    # Skip if already transcribed
     [ -s ~/Documents/Voice-Memos-Organized/transcripts/"${BASENAME}.txt" ] && continue
+    TODO+=("$audiofile")
+done
 
-    # Convert to WAV (skip on failure to avoid stale data)
-    if ! ffmpeg -y -i "$audiofile" -ar 16000 -ac 1 -c:a pcm_s16le "$TEMP_WAV" 2>/dev/null; then
-        echo "SKIP: Could not convert $BASENAME"
-        continue
-    fi
+echo "Transcribing ${#TODO[@]} memos..."
 
-    # Transcribe
-    "$WHISPER" -m "$MODEL" -f "$TEMP_WAV" --output-txt \
-      -of ~/Documents/Voice-Memos-Organized/transcripts/"$BASENAME" -t 8 --no-timestamps 2>/dev/null
-
-    rm -f "$TEMP_WAV"
+# Process in chunks of 50 to keep memory bounded
+for ((i=0; i<${#TODO[@]}; i+=50)); do
+    chunk=("${TODO[@]:i:50}")
+    parakeet-mlx --output-format txt \
+        --output-dir ~/Documents/Voice-Memos-Organized/transcripts \
+        "${chunk[@]}" || echo "Chunk starting at $i had errors, continuing"
 done
 ```
 
-**Performance:** ~1 min of audio per second on Apple Silicon. 67 hours of memos ≈ 1 hour to transcribe.
+**Performance** (verified 2026-05 on M3 Ultra): 8 min of audio transcribed in ~8 sec in batch mode = ~60× realtime. 67 hours of memos ≈ 70 min end-to-end including the one-time 2.3 GB model download.
 
 ### Step 5: Summarize Each Transcript
 

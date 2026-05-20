@@ -35,9 +35,20 @@ Relevant columns in `ZCLOUDRECORDING`:
 
 **Last verified:** 2026-05 on macOS 26 (Darwin 25). Single-memo rename propagated to iPhone within ~30s.
 
+## Transcription Engine: Parakeet MLX
+
+The skill uses [`parakeet-mlx`](https://github.com/senstella/parakeet-mlx) — an Apple Silicon native port of NVIDIA's Parakeet TDT model. Defaults to `mlx-community/parakeet-tdt-0.6b-v3` (multilingual, ~2.3 GB).
+
+**Why not whisper.cpp:** Parakeet matches whisper's speed in batch mode but produces properly punctuated and capitalized output, lowering downstream LLM-summarization noise. WER is also competitive (1.69% on LibriSpeech test-clean).
+
+**Why not the NeMo upstream:** NeMo requires CUDA; only the mlx-community port runs natively on M-series GPUs.
+
+**Verified 2026-05 on M3 Ultra:** ~60× realtime in batch mode (8 min of audio in ~8s wall time). Whisper.cpp remains the recommended fallback for non-European languages — see `TROUBLESHOOTING.md`.
+
 ## Pull Request Guidelines
 
 - Keep examples generic — no personal data, no business names, no real recording titles.
 - All processing must stay local (no API keys required). The skill's whole point is no third-party services touching your audio.
 - If you change the rename logic in Step 7, re-run the single-memo verification above and update the "Last verified" line.
+- If you change the transcription engine or model, re-run the batch benchmark and update the performance line in `SKILL.md` Step 4.
 - Test on a backup DB before iterating on live data.

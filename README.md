@@ -2,7 +2,7 @@
 
 A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill that turns hundreds of untitled Apple Voice Memos into a searchable, organized archive — with descriptive titles, summaries, themes, and key quotes.
 
-Transcription runs 100% locally on your Mac using NVIDIA Parakeet (MLX port for Apple Silicon) — no API keys needed. Summarization is handled by Claude.
+Transcription runs 100% locally on your Mac — no API keys needed. The skill supports two engines: **Parakeet** (recommended, faster + better punctuation, ~2.3 GB model) or **whisper.cpp** (lighter, ~150 MB model, better fit for Macs with less RAM). Summarization is handled by Claude.
 
 ## What It Does
 
@@ -10,7 +10,7 @@ Your Apple Voice Memos are buried in a hidden macOS folder, named things like "N
 
 1. **Finds** all your Voice Memos (they're at a non-obvious path that requires Full Disk Access)
 2. **Extracts** metadata from Apple's SQLite database (dates, durations, labels)
-3. **Transcribes** every recording locally using [Parakeet MLX](https://github.com/senstella/parakeet-mlx) (~60× realtime on Apple Silicon in batch mode, with proper punctuation)
+3. **Transcribes** every recording locally — choose [Parakeet MLX](https://github.com/senstella/parakeet-mlx) (recommended) or [whisper.cpp](https://github.com/ggerganov/whisper.cpp) (lighter); both run ~60× realtime on Apple Silicon in batch mode
 4. **Summarizes** each transcript with a descriptive title, themes, key quotes, and type classification
 5. **Builds** a searchable master index document
 6. **(Optional)** Writes the new titles back to iCloud so they sync to your iPhone
@@ -73,17 +73,30 @@ Each with summaries, themes, and key quotes extracted. With Step 7, the same tit
 ~/Documents/Voice-Memos-Raw/       ← copies of your original audio files
 ```
 
-The Parakeet model itself lives in `~/.cache/huggingface/hub/` (~2.3 GB, one-time download).
+Model files live in `~/.cache/huggingface/hub/` (Parakeet, ~2.3 GB) or `~/Documents/Voice-Memos-Organized/models/` (whisper, ~150 MB) — one-time downloads.
+
+## Choosing a Transcription Engine
+
+|                              | Parakeet MLX (recommended)  | whisper.cpp (lighter)                       |
+| ---------------------------- | --------------------------- | ------------------------------------------- |
+| Model size on disk           | ~2.3 GB                     | ~150 MB (base)                              |
+| RAM during transcription     | ~3-4 GB                     | ~500 MB                                     |
+| Speed (batch, Apple Silicon) | ~60× realtime               | ~60× realtime                               |
+| LibriSpeech test-clean WER   | 1.69%                       | ~5%                                         |
+| Punctuation/capitalization   | proper                      | basic                                       |
+| Language coverage            | English + 24 European       | per-model (en or multilingual)              |
+| Setup                        | `pipx install parakeet-mlx` | `brew install whisper-cpp` + model download |
+
+Default to Parakeet. Choose whisper if your Mac has less than ~16 GB RAM, you want a much smaller disk footprint, or you need a language Parakeet v3 doesn't cover (Mandarin, Japanese, Arabic, etc.).
 
 ## Performance
 
-Measured on an M3 Ultra in May 2026: **~60× realtime** in batch mode. A library of 329 memos (67 hours) takes roughly 70 minutes end-to-end, including the one-time model download.
+Measured on an M3 Ultra in May 2026: **~60× realtime** in batch mode with Parakeet. A library of 329 memos (67 hours) takes roughly 70 minutes end-to-end, including the one-time model download. Whisper.cpp `base.en` hits similar throughput.
 
 ## Tips
 
 - The master index works great in Obsidian, VS Code, or any text editor with Cmd+F
-- Parakeet's v3 model handles English plus 24 European languages
-- For non-European languages (Mandarin, Japanese, Arabic, etc.), use the whisper.cpp fallback documented in TROUBLESHOOTING.md
+- Parakeet's v3 model handles English plus 24 European languages; whisper supports many more via its multilingual `ggml-base.bin`
 - Works with memos organized into folders in the Voice Memos app
 - Step 7 (optional) renames memos in iCloud so the new titles appear on your iPhone
 

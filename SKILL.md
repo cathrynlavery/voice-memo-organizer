@@ -56,20 +56,45 @@ sqlite3 -header -csv ~/Library/Group\ Containers/group.com.apple.VoiceMemos.shar
 
 ### Step 3: Install Transcription Tools
 
+The skill supports two transcription engines. **Parakeet** is recommended for most users; **whisper.cpp** is the lighter alternative for Macs with less RAM/disk.
+
+|                              | Parakeet MLX (recommended)  | whisper.cpp (lighter)                       |
+| ---------------------------- | --------------------------- | ------------------------------------------- |
+| Model size on disk           | ~2.3 GB                     | ~150 MB (base)                              |
+| RAM during transcription     | ~3-4 GB                     | ~500 MB                                     |
+| Speed (batch, Apple Silicon) | ~60× realtime               | ~60× realtime                               |
+| LibriSpeech test-clean WER   | 1.69%                       | ~5%                                         |
+| Punctuation/capitalization   | proper                      | basic                                       |
+| Language coverage            | English + 24 European       | per-model (en or multilingual)              |
+| Setup                        | `pipx install parakeet-mlx` | `brew install whisper-cpp` + model download |
+
+Ask the user which they want. If they don't say, default to Parakeet unless their Mac has <16 GB RAM, in which case suggest whisper.
+
+**Parakeet (recommended):**
+
 ```bash
 brew install python@3.14 ffmpeg pipx
 pipx install parakeet-mlx
 ```
 
-That's it — no manual model download. The first transcription run fetches the ~2.3 GB MLX model from Hugging Face and caches it at `~/.cache/huggingface/hub/`.
+No manual model download — first run fetches the ~2.3 GB MLX model from Hugging Face into `~/.cache/huggingface/hub/`.
 
-> **Why parakeet?** NVIDIA's [Parakeet TDT 0.6B](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2), ported to MLX so it runs natively on Apple Silicon. Comparable speed to whisper.cpp in batch mode (~60× realtime on M3 Ultra), but with proper punctuation and capitalization out of the box and lower WER (1.69% on LibriSpeech test-clean). Supports English plus 24 European languages via the v3 model.
->
-> For non-European languages (Mandarin, Japanese, Arabic, etc.), see [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for the whisper.cpp fallback.
+**Whisper.cpp (lighter alternative):**
+
+```bash
+brew install ffmpeg whisper-cpp
+mkdir -p ~/Documents/Voice-Memos-Organized/models
+curl -L -o ~/Documents/Voice-Memos-Organized/models/ggml-base.en.bin \
+  "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
+```
+
+For non-English memos, swap `ggml-base.en.bin` → `ggml-base.bin` (multilingual). The Homebrew formula installs the binary as `whisper-cli` (not `whisper-cpp`).
 
 ### Step 4: Batch Transcribe
 
-`parakeet-mlx` accepts audio files directly (handles `.m4a` and `.qta` via ffmpeg internally) and loads the model once per invocation, so batch processing is fastest:
+Run the batch script for whichever engine the user installed in Step 3.
+
+**Parakeet batch (recommended):** `parakeet-mlx` accepts `.m4a` and `.qta` directly (handles decoding via ffmpeg internally) and loads the model once per invocation, so batch processing is fastest.
 
 ```bash
 mkdir -p ~/Documents/Voice-Memos-Organized/transcripts
@@ -94,7 +119,36 @@ for ((i=0; i<${#TODO[@]}; i+=50)); do
 done
 ```
 
-**Performance** (verified 2026-05 on M3 Ultra): 8 min of audio transcribed in ~8 sec in batch mode = ~60× realtime. 67 hours of memos ≈ 70 min end-to-end including the one-time 2.3 GB model download.
+**Performance** (verified 2026-05 on M3 Ultra): 8 min of audio in ~8 sec in batch mode = ~60× realtime. 67 hours of memos ≈ 70 min end-to-end including the one-time 2.3 GB model download.
+
+**Whisper batch (lighter alternative):** loads the model per file but uses ~500 MB RAM instead of 3-4 GB. Each file is converted to 16 kHz mono WAV first.
+
+```bash
+WHISPER="$(command -v whisper-cli)"
+MODEL="$HOME/Documents/Voice-Memos-Organized/models/ggml-base.en.bin"
+mkdir -p ~/Documents/Voice-Memos-Organized/transcripts
+
+for audiofile in ~/Documents/Voice-Memos-Raw/*; do
+    [ -f "$audiofile" ] || continue
+    BASENAME=$(basename "$audiofile" | sed 's/\.[^.]*$//')
+    TEMP_WAV="/tmp/vm_${BASENAME}.wav"
+
+    [ -s ~/Documents/Voice-Memos-Organized/transcripts/"${BASENAME}.txt" ] && continue
+
+    if ! ffmpeg -y -i "$audiofile" -ar 16000 -ac 1 -c:a pcm_s16le "$TEMP_WAV" 2>/dev/null; then
+        echo "SKIP: Could not convert $BASENAME"
+        continue
+    fi
+
+    "$WHISPER" -m "$MODEL" -f "$TEMP_WAV" --output-txt \
+        -of ~/Documents/Voice-Memos-Organized/transcripts/"$BASENAME" \
+        -t 8 --no-timestamps 2>/dev/null
+
+    rm -f "$TEMP_WAV"
+done
+```
+
+**Performance** with whisper-cpp `base.en` on Apple Silicon: ~60× realtime. 67 hours of memos ≈ 1 hour to transcribe.
 
 ### Step 5: Summarize Each Transcript
 

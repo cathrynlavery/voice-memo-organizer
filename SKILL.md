@@ -18,11 +18,13 @@ Turn hundreds of untitled Apple Voice Memos into a searchable, organized archive
 ### Step 1: Access Voice Memos
 
 Voice Memos are stored at:
+
 ```
 ~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/
 ```
 
 This path requires Full Disk Access. Verify access:
+
 ```bash
 ls ~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/ | head -5
 ```
@@ -30,6 +32,7 @@ ls ~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/ | h
 If permission denied → user must enable Full Disk Access for their terminal app. If the directory is empty → user should open Voice Memos on Mac and wait for iCloud sync.
 
 The folder also contains `CloudRecordings.db` — a SQLite database with metadata:
+
 ```bash
 sqlite3 ~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db \
   "SELECT COUNT(*), ROUND(SUM(ZDURATION)/3600,1) as hours FROM ZCLOUDRECORDING WHERE ZPATH IS NOT NULL;"
@@ -66,6 +69,7 @@ curl -L -o ~/Documents/Voice-Memos-Organized/models/ggml-base.en.bin \
 ### Step 4: Batch Transcribe
 
 For each audio file:
+
 1. Convert to 16kHz mono WAV using ffmpeg
 2. Run whisper.cpp with the base.en model
 3. Save transcript as .txt
@@ -101,6 +105,7 @@ done
 ### Step 5: Summarize Each Transcript
 
 For each transcript, generate a JSON summary with:
+
 - **title**: Short descriptive title (5-10 words)
 - **summary**: 2-3 sentence summary of the content
 - **themes**: Array of tags (e.g. "business", "personal", "health", "brainstorm")
@@ -114,11 +119,82 @@ Process in batches of 10-20 transcripts at a time using parallel agents for spee
 ### Step 6: Build Master Index
 
 Create `voice-memos-master-index.md` with:
+
 - Stats header (count, date range, total hours)
 - Theme breakdown
 - Type breakdown
 - Chronological entries with: date, title, duration, type, themes, summary, key quotes, filename
 - "Best Quotes" section at the end
+
+### Step 7: Rename in iCloud (optional — syncs titles to iPhone)
+
+The title your iPhone shows comes from `ZCUSTOMLABEL` in `CloudRecordings.db`, not the filename. Updating that column writes the new titles back through iCloud to every device.
+
+> **Warning:** this edits a live, iCloud-synced SQLite database. Default to dry-run. Test on ONE memo before bulk-applying. Newer macOS versions store an encrypted title in `ZENCRYPTEDTITLE` that overrides `ZCUSTOMLABEL` — this script clears it so the plain label wins.
+>
+> **Verified 2026-05** on macOS 26: single-memo rename synced to iPhone within ~30s of reopening Voice Memos on Mac.
+
+**Pre-flight (required):**
+
+1. Quit Voice Memos on **every** device — Mac (⌘Q), iPhone, iPad (swipe up from app switcher).
+2. Wait ~30 seconds for iCloud to settle.
+3. Back up the database:
+
+```bash
+DB=~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db
+cp "$DB" ~/Documents/Voice-Memos-Organized/CloudRecordings.db.backup-$(date +%Y%m%d-%H%M%S)
+```
+
+**Dry run** (prints proposed renames, no DB writes):
+
+```bash
+DB=~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db
+
+for summary in ~/Documents/Voice-Memos-Organized/summaries/*.json; do
+    BASENAME=$(basename "$summary" .json)
+    NEW_TITLE=$(jq -r '.title // empty' "$summary")
+    [ -z "$NEW_TITLE" ] && continue
+
+    CURRENT=$(sqlite3 "$DB" "SELECT COALESCE(ZCUSTOMLABEL,'(untitled)') FROM ZCLOUDRECORDING WHERE ZPATH LIKE '%${BASENAME}%' LIMIT 1;")
+    [ -z "$CURRENT" ] && { echo "SKIP: no DB row for $BASENAME"; continue; }
+    echo "[DRY] $BASENAME: '$CURRENT' → '$NEW_TITLE'"
+done
+```
+
+Review the output. If it looks right, run the apply step.
+
+**Apply** (writes to DB — wrapped in a transaction):
+
+```bash
+DB=~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db
+
+sqlite3 "$DB" "BEGIN;"
+for summary in ~/Documents/Voice-Memos-Organized/summaries/*.json; do
+    BASENAME=$(basename "$summary" .json)
+    NEW_TITLE=$(jq -r '.title // empty' "$summary")
+    [ -z "$NEW_TITLE" ] && continue
+
+    # Escape single quotes for SQL
+    SAFE_TITLE=$(printf "%s" "$NEW_TITLE" | sed "s/'/''/g")
+    sqlite3 "$DB" "UPDATE ZCLOUDRECORDING
+                   SET ZCUSTOMLABEL = '$SAFE_TITLE',
+                       ZENCRYPTEDTITLE = NULL
+                   WHERE ZPATH LIKE '%${BASENAME}%';"
+    echo "RENAMED: $BASENAME → $NEW_TITLE"
+done
+sqlite3 "$DB" "COMMIT;"
+```
+
+Then reopen Voice Memos on Mac, wait for the sync indicator to clear (~30s), then open it on iPhone. New titles should appear.
+
+**Recovery** — if anything looks wrong, quit Voice Memos everywhere and restore:
+
+```bash
+DB=~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db
+ls -t ~/Documents/Voice-Memos-Organized/CloudRecordings.db.backup-* | head -1 | xargs -I {} cp {} "$DB"
+```
+
+**Test one memo first.** Replace the loop with a single `UPDATE … WHERE Z_PK = <id>;` against one recording, reopen the app, and confirm the new title shows up on iPhone before running the full batch.
 
 ## Output Structure
 

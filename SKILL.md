@@ -56,51 +56,99 @@ sqlite3 -header -csv ~/Library/Group\ Containers/group.com.apple.VoiceMemos.shar
 
 ### Step 3: Install Transcription Tools
 
+The skill supports two transcription engines. **Parakeet** is recommended for most users; **whisper.cpp** is the lighter alternative for Macs with less RAM/disk.
+
+|                              | Parakeet MLX (recommended)  | whisper.cpp (lighter)                       |
+| ---------------------------- | --------------------------- | ------------------------------------------- |
+| Model size on disk           | ~2.3 GB                     | ~150 MB (base)                              |
+| RAM during transcription     | ~3-4 GB                     | ~500 MB                                     |
+| Speed (batch, Apple Silicon) | ~60× realtime               | ~60× realtime                               |
+| LibriSpeech test-clean WER   | 1.69%                       | ~5%                                         |
+| Punctuation/capitalization   | proper                      | basic                                       |
+| Language coverage            | English + 24 European       | per-model (en or multilingual)              |
+| Setup                        | `pipx install parakeet-mlx` | `brew install whisper-cpp` + model download |
+
+Ask the user which they want. If they don't say, default to Parakeet unless their Mac has <16 GB RAM, in which case suggest whisper.
+
+**Parakeet (recommended):**
+
+```bash
+brew install python@3.14 ffmpeg pipx
+pipx install parakeet-mlx
+```
+
+No manual model download — first run fetches the ~2.3 GB MLX model from Hugging Face into `~/.cache/huggingface/hub/`.
+
+**Whisper.cpp (lighter alternative):**
+
 ```bash
 brew install ffmpeg whisper-cpp
-
-# Download whisper.cpp base.en model (~150MB, good speed/accuracy for English)
+mkdir -p ~/Documents/Voice-Memos-Organized/models
 curl -L -o ~/Documents/Voice-Memos-Organized/models/ggml-base.en.bin \
   "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
 ```
 
-> **Note:** The Homebrew formula installs the binary as `whisper-cli` (not `whisper-cpp`).
+For non-English memos, swap `ggml-base.en.bin` → `ggml-base.bin` (multilingual). The Homebrew formula installs the binary as `whisper-cli` (not `whisper-cpp`).
 
 ### Step 4: Batch Transcribe
 
-For each audio file:
+Run the batch script for whichever engine the user installed in Step 3.
 
-1. Convert to 16kHz mono WAV using ffmpeg
-2. Run whisper.cpp with the base.en model
-3. Save transcript as .txt
+**Parakeet batch (recommended):** `parakeet-mlx` accepts `.m4a` and `.qta` directly (handles decoding via ffmpeg internally) and loads the model once per invocation, so batch processing is fastest.
 
 ```bash
-WHISPER="$(command -v whisper-cli)"  # auto-detect path
+mkdir -p ~/Documents/Voice-Memos-Organized/transcripts
+
+# Collect files that haven't been transcribed yet
+TODO=()
+for audiofile in ~/Documents/Voice-Memos-Raw/*; do
+    [ -f "$audiofile" ] || continue
+    BASENAME=$(basename "$audiofile" | sed 's/\.[^.]*$//')
+    [ -s ~/Documents/Voice-Memos-Organized/transcripts/"${BASENAME}.txt" ] && continue
+    TODO+=("$audiofile")
+done
+
+echo "Transcribing ${#TODO[@]} memos..."
+
+# Process in chunks of 50 to keep memory bounded
+for ((i=0; i<${#TODO[@]}; i+=50)); do
+    chunk=("${TODO[@]:i:50}")
+    parakeet-mlx --output-format txt \
+        --output-dir ~/Documents/Voice-Memos-Organized/transcripts \
+        "${chunk[@]}" || echo "Chunk starting at $i had errors, continuing"
+done
+```
+
+**Performance** (verified 2026-05 on M3 Ultra): 8 min of audio in ~8 sec in batch mode = ~60× realtime. 67 hours of memos ≈ 70 min end-to-end including the one-time 2.3 GB model download.
+
+**Whisper batch (lighter alternative):** loads the model per file but uses ~500 MB RAM instead of 3-4 GB. Each file is converted to 16 kHz mono WAV first.
+
+```bash
+WHISPER="$(command -v whisper-cli)"
 MODEL="$HOME/Documents/Voice-Memos-Organized/models/ggml-base.en.bin"
+mkdir -p ~/Documents/Voice-Memos-Organized/transcripts
 
 for audiofile in ~/Documents/Voice-Memos-Raw/*; do
     [ -f "$audiofile" ] || continue
     BASENAME=$(basename "$audiofile" | sed 's/\.[^.]*$//')
     TEMP_WAV="/tmp/vm_${BASENAME}.wav"
 
-    # Skip if already transcribed
     [ -s ~/Documents/Voice-Memos-Organized/transcripts/"${BASENAME}.txt" ] && continue
 
-    # Convert to WAV (skip on failure to avoid stale data)
     if ! ffmpeg -y -i "$audiofile" -ar 16000 -ac 1 -c:a pcm_s16le "$TEMP_WAV" 2>/dev/null; then
         echo "SKIP: Could not convert $BASENAME"
         continue
     fi
 
-    # Transcribe
     "$WHISPER" -m "$MODEL" -f "$TEMP_WAV" --output-txt \
-      -of ~/Documents/Voice-Memos-Organized/transcripts/"$BASENAME" -t 8 --no-timestamps 2>/dev/null
+        -of ~/Documents/Voice-Memos-Organized/transcripts/"$BASENAME" \
+        -t 8 --no-timestamps 2>/dev/null
 
     rm -f "$TEMP_WAV"
 done
 ```
 
-**Performance:** ~1 min of audio per second on Apple Silicon. 67 hours of memos ≈ 1 hour to transcribe.
+**Performance** with whisper-cpp `base.en` on Apple Silicon: ~60× realtime. 67 hours of memos ≈ 1 hour to transcribe.
 
 ### Step 5: Summarize Each Transcript
 
@@ -128,73 +176,200 @@ Create `voice-memos-master-index.md` with:
 
 ### Step 7: Rename in iCloud (optional — syncs titles to iPhone)
 
-The title your iPhone shows comes from `ZCUSTOMLABEL` in `CloudRecordings.db`, not the filename. Updating that column writes the new titles back through iCloud to every device.
+> **macOS 26 (Tahoe): direct SQLite writes to `CloudRecordings.db` cannot sync renamed titles to iPhone.** This is a hard limitation of how Apple's NSPersistentCloudKit framework tracks changes, not something you can work around with a different title column or flag. The Mac UI will show a SQLite-edited title locally, but iPhone will keep showing the old title indefinitely. **Use UI automation through the Voice Memos app.**
 
-> **Warning:** this edits a live, iCloud-synced SQLite database. Default to dry-run. Test on ONE memo before bulk-applying. Newer macOS versions store an encrypted title in `ZENCRYPTEDTITLE` that overrides `ZCUSTOMLABEL` — this script clears it so the plain label wins.
->
-> **Verified 2026-05** on macOS 26: single-memo rename synced to iPhone within ~30s of reopening Voice Memos on Mac.
+#### Findings from investigation (macOS 26.5, May 2026)
 
-**Pre-flight (required):**
+The original version of this skill said to `UPDATE ZCUSTOMLABEL` and `SET ZENCRYPTEDTITLE = NULL`. That guidance is wrong on multiple counts. Here is the actual schema behavior:
 
-1. Quit Voice Memos on **every** device — Mac (⌘Q), iPhone, iPad (swipe up from app switcher).
-2. Wait ~30 seconds for iCloud to settle.
-3. Back up the database:
+| Column                   | What it actually is                                                                                                                                                     | What to do                                                                                                                                                                      |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ZCUSTOMLABEL`           | ISO timestamp like `2026-05-16T05:02:02Z` for untitled memos. **Not** the display title.                                                                                | Leave alone.                                                                                                                                                                    |
+| `ZCUSTOMLABELFORSORTING` | The display title shown in both Mac and iPhone apps. For unnamed memos: `"New Recording 309"`.                                                                          | Must be updated.                                                                                                                                                                |
+| `ZENCRYPTEDTITLE`        | **Misnamed — it's plain UTF-8 text**, not encrypted. Confirmed by reading hex: `544553542052454E414D4520E28094204D6179203230` = `"TEST RENAME — May 20"` byte-for-byte. | Must be updated to the same plain text as `ZCUSTOMLABELFORSORTING`. **Never NULL it** — that crashes Voice Memos on next launch with an `NSFetchedResultsController` `SIGABRT`. |
+
+Even with both title columns set correctly via SQLite:
+
+- **Mac UI**: shows the new title after relaunching Voice Memos ✓
+- **iPhone**: does **not** receive the rename — iCloud never pushes it
+
+#### Why iPhone sync fails
+
+`CloudRecordings.db` is a Core Data store with NSPersistentCloudKit. CloudKit sync is driven by these tables:
+
+- `ATRANSACTION` / `ACHANGE` — Core Data persistent history. Records which entities changed and when.
+- `ANSCKEXPORTEDOBJECT` / `ANSCKRECORDMETADATA` / `ANSCKEXPORTOPERATION` — CloudKit export queue and mirror state.
+
+When you UPDATE a row via raw SQLite, **nothing is written to those tables**. From `voicememod`'s perspective (the iCloud sync daemon), the record hasn't changed and there's nothing to push. The Voice Memos app on Mac reads the underlying SQLite row directly, so the local UI updates — but CloudKit never finds out.
+
+To do this "properly" via direct DB writes, you'd need to also insert correct rows into `ATRANSACTION`, `ACHANGE`, and the `ANSCK*` export tables — replicating what Core Data does internally. That's fragile, undocumented, and one schema bump from Apple will break it.
+
+#### Verified path: UI automation through Voice Memos
+
+The verified sync-safe method is to drive the Voice Memos UI programmatically, the same way a person would rename a memo. This goes through the app's Core Data stack, which records persistent history and queues the CloudKit export.
+
+Prerequisites:
+
+- Voice Memos must open cleanly.
+- The automation host must have Accessibility permission: System Settings → Privacy & Security → Accessibility. Enable the terminal app, Codex host, or script runner that will drive the UI.
+- Do not touch the iPhone directly. The test is whether iCloud sync carries the Mac-side rename to iPhone.
+
+High-level automation flow:
+
+1. Open Voice Memos.
+2. Select one target memo by current visible title/date/duration, or by using the Voice Memos search field.
+3. Click the title field in the details pane.
+4. Select all text in the title field, type the new title, and press Return.
+5. Verify the Mac UI shows the new title.
+6. Verify Core Data/CloudKit metadata moved for that one memo.
+7. Ask the user to confirm the iPhone shows the new title, usually within 60 seconds.
+8. Only after that one-memo gate passes, bulk-rename the remaining memos with the same UI path.
+
+Codex Computer Use worked on macOS 26.5 once Voice Memos was stable. The detail title field was accessible as a settable text field after selecting a memo. A reliable interaction was:
+
+1. Select memo in the Voice Memos list.
+2. Click the settable title text field in the detail pane.
+3. Press Command-A.
+4. Type the new title.
+5. Press Return.
+
+AppleScript/System Events can use the same accessibility path, but Voice Memos has no useful AppleScript scripting dictionary. Treat it as UI scripting, not app scripting.
+
+Verified result from the May 21, 2026 production test:
+
+- Seven memos were renamed through Voice Memos UI automation.
+- Each rename created a new `ACHANGE` row and advanced `ANSCKRECORDMETADATA.ZLASTEXPORTEDTRANSACTIONNUMBER` for the matching recording.
+- The user confirmed the renamed titles appeared on iPhone.
+
+#### Validate one rename before bulk work
+
+After renaming one memo through the UI, verify the DB and CloudKit mirror state. Substitute the audio basename and the row primary key:
+
+```bash
+DB=~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db
+BASENAME="20260512 084706-68FCCD72"
+
+sqlite3 "$DB" "
+SELECT Z_PK, ZCUSTOMLABELFORSORTING, quote(ZENCRYPTEDTITLE), ZPATH
+FROM ZCLOUDRECORDING
+WHERE ZPATH LIKE '%' || '$BASENAME' || '%';
+
+SELECT COUNT(*) AS transaction_count, MAX(Z_PK) AS max_transaction
+FROM ATRANSACTION;
+
+SELECT Z_PK, ZENTITYPK, ZTRANSACTIONID, hex(ZCOLUMNS)
+FROM ACHANGE
+ORDER BY Z_PK DESC
+LIMIT 10;
+"
+```
+
+Expected result:
+
+- `ZCUSTOMLABELFORSORTING` matches the new title.
+- `ZENCRYPTEDTITLE` contains the same title as plain UTF-8 bytes.
+- A recent `ACHANGE` row exists for the renamed `ZCLOUDRECORDING.Z_PK`.
+- `ATRANSACTION` advanced after the UI rename.
+
+Then check the CloudKit metadata for the renamed row:
+
+```bash
+PK=<ZCLOUDRECORDING_Z_PK_FROM_QUERY_ABOVE>
+sqlite3 "$DB" "
+SELECT ZENTITYPK, ZLASTEXPORTEDTRANSACTIONNUMBER, ZNEEDSUPLOAD
+FROM ANSCKRECORDMETADATA
+WHERE ZENTITYPK = $PK;
+"
+```
+
+Expected result: `ZLASTEXPORTEDTRANSACTIONNUMBER` reaches the new transaction number. In the verified May 2026 test, this was enough for the iPhone title to update after the user reopened Voice Memos.
+
+#### Crash recovery after DB restore or experimentation
+
+Voice Memos can crash on launch if `voicememod` keeps stale Core Data/SQLite state after the DB file has been replaced. The crash may surface as an `NSFetchedResultsController` abort in `~/Library/Logs/DiagnosticReports/VoiceMemos-*.ips`, even when `ZCLOUDRECORDING` itself is clean.
+
+Before touching the DB, quit Voice Memos and verify:
+
+```bash
+pgrep -lf "VoiceMemos.app/Contents/MacOS/VoiceMemos" && echo "still running" || echo "ok"
+```
+
+If restoring or replacing the DB:
+
+1. Back up the current DB first.
+2. Copy `CloudRecordings.db` and matching `CloudRecordings.db-wal` / `CloudRecordings.db-shm` sidecars together if those sidecars exist for the backup being restored.
+3. Restart `voicememod` after the file replacement.
+4. Launch Voice Memos and verify no new crash report appears.
+
+Commands:
 
 ```bash
 DB=~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db
 cp "$DB" ~/Documents/Voice-Memos-Organized/CloudRecordings.db.backup-$(date +%Y%m%d-%H%M%S)
+
+# Quit Voice Memos first, then:
+killall voicememod 2>/dev/null || true
+open -a VoiceMemos
 ```
 
-**Dry run** (prints proposed renames, no DB writes):
+Do not rely on `launchctl kickstart -k gui/$(id -u)/com.apple.voicememod`; on macOS 26.5 it can fail with SIP restrictions. `killall voicememod` is enough; launchd restarts it on demand.
+
+Useful log query while diagnosing launch crashes:
 
 ```bash
-DB=~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db
-
-for summary in ~/Documents/Voice-Memos-Organized/summaries/*.json; do
-    BASENAME=$(basename "$summary" .json)
-    NEW_TITLE=$(jq -r '.title // empty' "$summary")
-    [ -z "$NEW_TITLE" ] && continue
-
-    CURRENT=$(sqlite3 "$DB" "SELECT COALESCE(ZCUSTOMLABEL,'(untitled)') FROM ZCLOUDRECORDING WHERE ZPATH LIKE '%${BASENAME}%' LIMIT 1;")
-    [ -z "$CURRENT" ] && { echo "SKIP: no DB row for $BASENAME"; continue; }
-    echo "[DRY] $BASENAME: '$CURRENT' → '$NEW_TITLE'"
-done
+/usr/bin/log show --debug --info --last 5m --style compact \
+  --predicate 'process == "VoiceMemos" OR process == "voicememod"'
 ```
 
-Review the output. If it looks right, run the apply step.
+Look for `voicememod` persistent-store errors, SQLite `disk I/O error`, or XPC store failures. If those appear immediately after DB replacement, restart `voicememod` before changing title rows again.
 
-**Apply** (writes to DB — wrapped in a transaction):
+#### SQL transaction footgun (separate issue)
+
+The previous version of this script also had:
 
 ```bash
-DB=~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db
-
 sqlite3 "$DB" "BEGIN;"
-for summary in ~/Documents/Voice-Memos-Organized/summaries/*.json; do
-    BASENAME=$(basename "$summary" .json)
-    NEW_TITLE=$(jq -r '.title // empty' "$summary")
-    [ -z "$NEW_TITLE" ] && continue
-
-    # Escape single quotes for SQL
-    SAFE_TITLE=$(printf "%s" "$NEW_TITLE" | sed "s/'/''/g")
-    sqlite3 "$DB" "UPDATE ZCLOUDRECORDING
-                   SET ZCUSTOMLABEL = '$SAFE_TITLE',
-                       ZENCRYPTEDTITLE = NULL
-                   WHERE ZPATH LIKE '%${BASENAME}%';"
-    echo "RENAMED: $BASENAME → $NEW_TITLE"
-done
+for ...; do sqlite3 "$DB" "UPDATE ..."; done
 sqlite3 "$DB" "COMMIT;"
 ```
 
-Then reopen Voice Memos on Mac, wait for the sync indicator to clear (~30s), then open it on iPhone. New titles should appear.
+Each `sqlite3` invocation opens its own connection, so `BEGIN` and `COMMIT` are in separate transactions from the UPDATEs. The UPDATEs auto-commit individually and `COMMIT` errors with `no transaction is active`. If you need atomicity, use one heredoc:
 
-**Recovery** — if anything looks wrong, quit Voice Memos everywhere and restore:
+```bash
+sqlite3 "$DB" <<'SQL'
+BEGIN;
+UPDATE ...;
+UPDATE ...;
+COMMIT;
+SQL
+```
+
+#### If you still want to try the SQLite path (Mac-local only, no iPhone sync)
+
+Useful only if you want the Mac UI to show titles without caring about iPhone. With Voice Memos quit and a backup taken:
 
 ```bash
 DB=~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db
-ls -t ~/Documents/Voice-Memos-Organized/CloudRecordings.db.backup-* | head -1 | xargs -I {} cp {} "$DB"
+
+{
+    echo "BEGIN;"
+    for summary in ~/Documents/Voice-Memos-Organized/summaries/*.json; do
+        BASENAME=$(basename "$summary" .json)
+        NEW_TITLE=$(jq -r '.title // empty' "$summary")
+        [ -z "$NEW_TITLE" ] && continue
+        SAFE_TITLE=$(printf "%s" "$NEW_TITLE" | sed "s/'/''/g")
+        echo "UPDATE ZCLOUDRECORDING"
+        echo "   SET ZCUSTOMLABELFORSORTING = '$SAFE_TITLE',"
+        echo "       ZENCRYPTEDTITLE = CAST('$SAFE_TITLE' AS BLOB)"
+        echo " WHERE ZPATH LIKE '%${BASENAME}%';"
+    done
+    echo "COMMIT;"
+} | sqlite3 "$DB"
 ```
 
-**Test one memo first.** Replace the loop with a single `UPDATE … WHERE Z_PK = <id>;` against one recording, reopen the app, and confirm the new title shows up on iPhone before running the full batch.
+Set both `ZCUSTOMLABELFORSORTING` and `ZENCRYPTEDTITLE` to the same plain UTF-8 string. Do **not** set `ZENCRYPTEDTITLE = NULL`. Do **not** touch `ZCUSTOMLABEL` (it's a recording timestamp, not a title).
+
+iPhone will keep showing the old "New Recording N" titles. There is no known way to fix this short of using the Voice Memos UI on Mac or iPhone to do the rename.
 
 ## Output Structure
 

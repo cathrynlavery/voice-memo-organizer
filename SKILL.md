@@ -50,7 +50,7 @@ cp ~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/*.qt
 
 # Export metadata
 sqlite3 -header -csv ~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db \
-  "SELECT Z_PK as id, ZCUSTOMLABEL as label, ZPATH as filename, ROUND(ZDURATION,1) as duration_secs, datetime(ZDATE + 978307200, 'unixepoch', 'localtime') as recorded_date FROM ZCLOUDRECORDING WHERE ZPATH IS NOT NULL AND ZPATH != '' ORDER BY ZDATE ASC;" \
+  "SELECT Z_PK as id, COALESCE(ZCUSTOMLABELFORSORTING, ZCUSTOMLABEL, '') as title, ZPATH as filename, ROUND(ZDURATION,1) as duration_secs, datetime(ZDATE + 978307200, 'unixepoch', 'localtime') as recorded_date FROM ZCLOUDRECORDING WHERE ZPATH IS NOT NULL AND ZPATH != '' ORDER BY ZDATE ASC;" \
   > ~/Documents/Voice-Memos-Organized/recordings-metadata.csv
 ```
 
@@ -73,7 +73,7 @@ Ask the user which they want. If they don't say, default to Parakeet unless thei
 **Parakeet (recommended):**
 
 ```bash
-brew install python@3.14 ffmpeg pipx
+brew install ffmpeg pipx
 pipx install parakeet-mlx
 ```
 
@@ -223,7 +223,7 @@ High-level automation flow:
 5. Verify the Mac UI shows the new title.
 6. Verify Core Data/CloudKit metadata moved for that one memo.
 7. Ask the user to confirm the iPhone shows the new title, usually within 60 seconds.
-8. Only after that one-memo gate passes, bulk-rename the remaining memos with the same UI path.
+8. Only after that one-memo gate passes, bulk-rename the remaining memos with the same UI path. Do not require iPhone confirmation after every batch unless CloudKit metadata stops advancing or pending upload/export rows remain.
 
 Codex Computer Use worked on macOS 26.5 once Voice Memos was stable. The detail title field was accessible as a settable text field after selecting a memo. A reliable interaction was:
 
@@ -235,11 +235,55 @@ Codex Computer Use worked on macOS 26.5 once Voice Memos was stable. The detail 
 
 AppleScript/System Events can use the same accessibility path, but Voice Memos has no useful AppleScript scripting dictionary. Treat it as UI scripting, not app scripting.
 
-Verified result from the May 21, 2026 production test:
+#### Bulk rename workflow
 
-- Seven memos were renamed through Voice Memos UI automation.
-- Each rename created a new `ACHANGE` row and advanced `ANSCKRECORDMETADATA.ZLASTEXPORTEDTRANSACTIONNUMBER` for the matching recording.
-- The user confirmed the renamed titles appeared on iPhone.
+For large libraries, do not try to rename everything in one pass. Use small batches that can be recovered safely.
+
+1. Rebuild a title-candidate manifest from the current `CloudRecordings.db`.
+2. Select only generic `New Recording...` rows that are 10 seconds or longer.
+3. Skip rows that already have real titles, rows under 10 seconds, failed/corrupt audio, empty/missing transcripts, and transcripts too thin or sensitive to title safely.
+4. Generate concise descriptive titles from transcript excerpts.
+5. Save a proposal manifest before renaming.
+6. Back up `CloudRecordings.db` with SQLite `.backup` before each rename batch.
+7. Rename only through the Mac Voice Memos UI.
+8. Verify read-only in SQLite before moving to the next batch.
+9. Keep a running report with batch names, backups, verification results, and skipped-row reasons.
+
+Recommended batch size: 10-15 memos. Ten is slower but easier to recover if Voice Memos focus or search behaves unexpectedly.
+
+Useful candidate-query shape:
+
+```bash
+DB=~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db
+
+sqlite3 -header -csv "$DB" "
+SELECT Z_PK,
+       COALESCE(ZCUSTOMLABELFORSORTING, '') AS current_title,
+       ZPATH,
+       ROUND(ZDURATION, 1) AS duration_secs,
+       datetime(ZDATE + 978307200, 'unixepoch', 'localtime') AS recorded_at
+FROM ZCLOUDRECORDING
+WHERE ZPATH IS NOT NULL
+  AND ZPATH != ''
+  AND ZDURATION >= 10
+  AND ZCUSTOMLABELFORSORTING LIKE 'New Recording%'
+ORDER BY ZDATE DESC;
+"
+```
+
+Back up before each UI batch:
+
+```bash
+sqlite3 "$DB" ".backup '$HOME/Documents/Voice-Memos-Organized/CloudRecordings.db.pre-ui-batch-$(date +%Y%m%d-%H%M%S)'"
+```
+
+Verified result from the May 2026 production run:
+
+- The first UI rename was confirmed on iPhone.
+- Follow-on batches were completed through Mac Voice Memos UI automation only.
+- Each batch was verified with Mac title columns, Core Data change rows, no pending upload/export rows, and CloudKit export metadata.
+- Some older recordings had legacy-null per-row export markers; those were logged explicitly and only continued when `ZNEEDSUPLOAD = 0` and no pending upload/export rows remained.
+- Final verified state: 410 total rows, 338 descriptive titles, 72 generic titles remaining, 38 tiny generic rows under 10 seconds, and 34 useful generic rows skipped because their transcripts were empty, missing, failed/corrupt, too thin, or too sensitive/ambiguous to title safely.
 
 #### Validate one rename before bulk work
 
@@ -267,7 +311,7 @@ LIMIT 10;
 Expected result:
 
 - `ZCUSTOMLABELFORSORTING` matches the new title.
-- `ZENCRYPTEDTITLE` contains the same title as plain UTF-8 bytes.
+- `ZENCRYPTEDTITLE` contains the same title as plain UTF-8 bytes. Do not set it to `NULL`.
 - A recent `ACHANGE` row exists for the renamed `ZCLOUDRECORDING.Z_PK`.
 - `ATRANSACTION` advanced after the UI rename.
 
@@ -283,6 +327,26 @@ WHERE ZENTITYPK = $PK;
 ```
 
 Expected result: `ZLASTEXPORTEDTRANSACTIONNUMBER` reaches the new transaction number. In the verified May 2026 test, this was enough for the iPhone title to update after the user reopened Voice Memos.
+
+For every batch, also check there is no pending CloudKit work:
+
+```bash
+sqlite3 "$DB" "
+SELECT COUNT(*) AS pending_record_metadata
+FROM ANSCKRECORDMETADATA
+WHERE COALESCE(ZNEEDSUPLOAD,0) != 0
+   OR COALESCE(ZPENDINGEXPORTCHANGETYPENUMBER,0) != 0
+   OR COALESCE(ZPENDINGEXPORTTRANSACTIONNUMBER,0) != 0;
+
+SELECT COUNT(*) AS export_operations
+FROM ANSCKEXPORTOPERATION;
+
+SELECT MAX(ZLASTEXPORTEDTRANSACTIONNUMBER) AS max_exported_transaction
+FROM ANSCKRECORDMETADATA;
+"
+```
+
+If older rows have `NULL` `ZLASTEXPORTEDTRANSACTIONNUMBER` before and after the UI rename, document this as a legacy-null metadata caveat. Continue only if title columns match, `ACHANGE` rows exist, `ZNEEDSUPLOAD = 0`, and pending metadata/export-operation counts are zero.
 
 #### Crash recovery after DB restore or experimentation
 
@@ -323,53 +387,9 @@ Useful log query while diagnosing launch crashes:
 
 Look for `voicememod` persistent-store errors, SQLite `disk I/O error`, or XPC store failures. If those appear immediately after DB replacement, restart `voicememod` before changing title rows again.
 
-#### SQL transaction footgun (separate issue)
+#### Direct SQLite rename attempts
 
-The previous version of this script also had:
-
-```bash
-sqlite3 "$DB" "BEGIN;"
-for ...; do sqlite3 "$DB" "UPDATE ..."; done
-sqlite3 "$DB" "COMMIT;"
-```
-
-Each `sqlite3` invocation opens its own connection, so `BEGIN` and `COMMIT` are in separate transactions from the UPDATEs. The UPDATEs auto-commit individually and `COMMIT` errors with `no transaction is active`. If you need atomicity, use one heredoc:
-
-```bash
-sqlite3 "$DB" <<'SQL'
-BEGIN;
-UPDATE ...;
-UPDATE ...;
-COMMIT;
-SQL
-```
-
-#### If you still want to try the SQLite path (Mac-local only, no iPhone sync)
-
-Useful only if you want the Mac UI to show titles without caring about iPhone. With Voice Memos quit and a backup taken:
-
-```bash
-DB=~/Library/Group\ Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db
-
-{
-    echo "BEGIN;"
-    for summary in ~/Documents/Voice-Memos-Organized/summaries/*.json; do
-        BASENAME=$(basename "$summary" .json)
-        NEW_TITLE=$(jq -r '.title // empty' "$summary")
-        [ -z "$NEW_TITLE" ] && continue
-        SAFE_TITLE=$(printf "%s" "$NEW_TITLE" | sed "s/'/''/g")
-        echo "UPDATE ZCLOUDRECORDING"
-        echo "   SET ZCUSTOMLABELFORSORTING = '$SAFE_TITLE',"
-        echo "       ZENCRYPTEDTITLE = CAST('$SAFE_TITLE' AS BLOB)"
-        echo " WHERE ZPATH LIKE '%${BASENAME}%';"
-    done
-    echo "COMMIT;"
-} | sqlite3 "$DB"
-```
-
-Set both `ZCUSTOMLABELFORSORTING` and `ZENCRYPTEDTITLE` to the same plain UTF-8 string. Do **not** set `ZENCRYPTEDTITLE = NULL`. Do **not** touch `ZCUSTOMLABEL` (it's a recording timestamp, not a title).
-
-iPhone will keep showing the old "New Recording N" titles. There is no known way to fix this short of using the Voice Memos UI on Mac or iPhone to do the rename.
+Do not provide a direct-SQLite rename workflow in this skill. Raw SQLite title edits can make the Mac app appear renamed locally, but they bypass Core Data persistent history and do not reliably sync to iPhone. For public use, treat direct database updates as unsupported except for read-only inspection and `.backup` snapshots.
 
 ## Output Structure
 

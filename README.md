@@ -9,11 +9,11 @@ Transcription runs 100% locally on your Mac — no API keys needed. The skill su
 Your Apple Voice Memos are buried in a hidden macOS folder, named things like "New Recording 247." This skill:
 
 1. **Finds** all your Voice Memos (they're at a non-obvious path that requires Full Disk Access)
-2. **Extracts** metadata from Apple's SQLite database (dates, durations, labels)
+2. **Extracts** metadata from Apple's SQLite database (dates, durations, display titles)
 3. **Transcribes** every recording locally — choose [Parakeet MLX](https://github.com/senstella/parakeet-mlx) (recommended) or [whisper.cpp](https://github.com/ggerganov/whisper.cpp) (lighter); both run ~60× realtime on Apple Silicon in batch mode
 4. **Summarizes** each transcript with a descriptive title, themes, key quotes, and type classification
 5. **Builds** a searchable master index document
-6. **(Optional)** Renames memos through the Voice Memos app on Mac so Apple's own iCloud sync pushes the new titles to your iPhone
+6. **(Optional)** Renames memos through the Mac Voice Memos app UI so the new titles sync to your iPhone
 
 ## Before → After
 
@@ -25,7 +25,7 @@ Your Apple Voice Memos are buried in a hidden macOS folder, named things like "N
 - "Bedtime Story About the Brave Little Fox" (personal, family)
 - "Legal Call Re: Buying Back Company from PE" (business, legal)
 
-Each with summaries, themes, and key quotes extracted. With Step 7, the same titles appear in the Voice Memos app on your iPhone.
+Each with summaries, themes, and key quotes extracted. With Step 7, Claude drives the Mac Voice Memos UI to rename each memo, and the same titles appear in the Voice Memos app on your iPhone.
 
 ## Install
 
@@ -98,7 +98,7 @@ Measured on an M3 Ultra in May 2026: **~60× realtime** in batch mode with Parak
 - The master index works great in Obsidian, VS Code, or any text editor with Cmd+F
 - Parakeet's v3 model handles English plus 24 European languages; whisper supports many more via its multilingual `ggml-base.bin`
 - Works with memos organized into folders in the Voice Memos app
-- Step 7 (optional) uses Voice Memos UI automation for renames. Direct SQLite title edits do not sync to iPhone.
+- Step 7 (optional) must use Mac Voice Memos UI automation for sync-safe renames. Direct SQLite title edits can appear locally on Mac but will not reliably sync to iPhone.
 
 ## Credits
 

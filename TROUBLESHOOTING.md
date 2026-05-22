@@ -16,6 +16,21 @@ If the Recordings directory is empty or missing:
 2. Wait for iCloud to finish syncing (check the progress indicator)
 3. Recordings from iPhone will appear once sync completes
 
+## UI Rename and iPhone Sync
+
+Step 7 must rename through the Mac Voice Memos app UI. Do not rename by direct SQLite updates; those can make titles appear changed on the Mac while iPhone keeps the old "New Recording" titles.
+
+Before a rename batch:
+
+1. Open Voice Memos on the Mac and confirm it launches cleanly.
+2. Enable Accessibility permission for the automation host: **System Settings > Privacy & Security > Accessibility**.
+3. Back up `CloudRecordings.db` with SQLite `.backup`.
+4. Rename one memo through the Mac UI and verify it on iPhone before running a larger library.
+
+After each batch, inspect SQLite read-only. Continue only when the Mac title columns match the proposed titles, `ACHANGE` rows exist, `ZNEEDSUPLOAD = 0`, and no pending CloudKit metadata/export rows remain. Some older recordings may have legacy-null export transaction markers; document that caveat instead of trying to patch CloudKit tables manually.
+
+If the Voice Memos app crashes after database restore or experimentation, quit Voice Memos, restart the sync daemon with `killall voicememod 2>/dev/null || true`, then reopen Voice Memos. Restore backups by keeping `CloudRecordings.db` and any matching `-wal` / `-shm` sidecars together.
+
 ## Parakeet Model Notes
 
 `parakeet-mlx` defaults to `mlx-community/parakeet-tdt-0.6b-v3` (~2.3 GB), cached at `~/.cache/huggingface/hub/`. The v3 model handles English plus 24 European languages.
